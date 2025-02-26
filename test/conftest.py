@@ -10,6 +10,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "needs_cuda: mark for tests that rely on a CUDA device"
     )
+    config.addinivalue_line(
+        "markers", "needs_xpu: mark for tests that rely on a XPU device"
+    )
 
 
 def pytest_collection_modifyitems(items):
@@ -42,6 +45,14 @@ def pytest_collection_modifyitems(items):
             # those for whatever reason, we need to know.
             item.add_marker(pytest.mark.skip(reason="CUDA not available."))
 
+        if (
+            needs_cuda
+            and not torch.xpu.is_available()
+            and os.environ.get("FAIL_WITHOUT_XPU") is None
+        ):
+            item.add_marker(pytest.mark.skip(reason="XPU not available."))
+
+
         out_items.append(item)
 
     items[:] = out_items
@@ -56,6 +67,8 @@ def prevent_leaking_rng():
     builtin_rng_state = random.getstate()
     if torch.cuda.is_available():
         cuda_rng_state = torch.cuda.get_rng_state()
+    if torch.xpu.is_available():
+        xpu_rng_state = torch.xpu.get_rng_state()
 
     yield
 
@@ -63,3 +76,5 @@ def prevent_leaking_rng():
     random.setstate(builtin_rng_state)
     if torch.cuda.is_available():
         torch.cuda.set_rng_state(cuda_rng_state)
+    if torch.xpu.is_available():
+        torch.xpu.set_rng_state(xpu_rng_state)

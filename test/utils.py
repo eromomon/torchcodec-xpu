@@ -19,8 +19,17 @@ def needs_cuda(test_item):
     return pytest.mark.needs_cuda(test_item)
 
 
-def cpu_and_cuda():
-    return ("cpu", pytest.param("cuda", marks=pytest.mark.needs_cuda))
+# Decorator for skipping XPU tests when XPU isn't available. The tests are
+# effectively marked to be skipped in pytest_collection_modifyitems() of
+# conftest.py
+def needs_xpu(test_item):
+    return pytest.mark.needs_xpu(test_item)
+
+
+def cpu_and_accelerators():
+    return ("cpu",
+        pytest.param("cuda", marks=pytest.mark.needs_cuda),
+        pytest.param("xpu", marks=pytest.mark.needs_xpu),)
 
 
 # For use with decoded data frames. On CPU Linux, we expect exact, bit-for-bit
