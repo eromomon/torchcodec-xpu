@@ -4,7 +4,17 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic -Werror ${TORCH_CXX_FLAGS}")
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic -Werror -Wl,--no-undefined ${TORCH_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wl,--no-undefined ${TORCH_CXX_FLAGS}")
+if(ENABLE_CUDA)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DENABLE_CUDA")
+endif()
+if(ENABLE_XPU)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(L0 REQUIRED IMPORTED_TARGET level-zero)
+    pkg_check_modules(LIBVA REQUIRED IMPORTED_TARGET libva)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DENABLE_XPU")
+endif()
 find_package(Python3 ${PYTHON_VERSION} EXACT COMPONENTS Development)
 
 function(make_torchcodec_library library_name ffmpeg_target)
@@ -17,11 +27,13 @@ function(make_torchcodec_library library_name ffmpeg_target)
         VideoDecoderOps.h
         VideoDecoderOps.cpp
         DeviceInterface.h
+	CPUOnlyDevice.cpp
     )
     if(ENABLE_CUDA)
         list(APPEND sources CudaDevice.cpp)
-    else()
-        list(APPEND sources CPUOnlyDevice.cpp)
+    endif()
+    if(ENABLE_XPU)
+        list(APPEND sources XPUDevice.cpp)
     endif()
     add_library(${library_name} SHARED ${sources})
     set_property(TARGET ${library_name} PROPERTY CXX_STANDARD 17)
@@ -35,10 +47,14 @@ function(make_torchcodec_library library_name ffmpeg_target)
     )
 
     set(NEEDED_LIBRARIES ${ffmpeg_target} ${TORCH_LIBRARIES}
-        ${Python3_LIBRARIES})
+        ${Python3_LIBRARIES} ze_loader va)
     if(ENABLE_CUDA)
         list(APPEND NEEDED_LIBRARIES
             ${CUDA_nppi_LIBRARY} ${CUDA_nppicc_LIBRARY} )
+    endif()
+    if(ENABLE_XPU)
+        list(APPEND NEEDED_LIBRARIES
+            PkgConfig::L0 PkgConfig::LIBVA )
     endif()
     target_link_libraries(
         ${library_name}

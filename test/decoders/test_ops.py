@@ -360,6 +360,11 @@ class TestVideoOps:
         add_video_stream(decoder, device=device)
         frame0, _, _ = get_next_frame(decoder)
         reference_frame0 = NASA_VIDEO.get_frame_data_by_index(0)
+
+        torch.permute(frame0.cpu(), (1,2,0)).numpy().tofile("frame0.rgb")
+        torch.permute(reference_frame0.cpu(), (1,2,0)).numpy().tofile("refframe0.rgb")
+
+        #assert_frames_equal(frame0.cpu(), reference_frame0.cpu()) #.to(device))
         assert_frames_equal(frame0, reference_frame0.to(device))
         reference_frame1 = NASA_VIDEO.get_frame_data_by_index(1)
         frame1, _, _ = get_next_frame(decoder)
