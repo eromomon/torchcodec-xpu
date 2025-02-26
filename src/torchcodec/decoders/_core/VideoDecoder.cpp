@@ -126,6 +126,8 @@ VideoDecoder::~VideoDecoder() {
     if (device.type() == torch::kCPU) {
     } else if (device.type() == torch::kCUDA) {
       releaseContextOnCuda(device, streamInfo.codecContext.get());
+    } else if (device.type() == torch::kXPU) {
+      // TODO
     } else {
       TORCH_CHECK(false, "Invalid device type: " + device.str());
     }
@@ -453,6 +455,13 @@ void VideoDecoder::addVideoStream(
             .value_or(avCodec));
   }
 
+  if (videoStreamOptions.device.type() == torch::kXPU) {
+    avCodec = makeAVCodecOnlyUseForCallingAVFindBestStream(
+        findXpuCodec(
+            videoStreamOptions.device, streamInfo.stream->codecpar->codec_id)
+            .value_or(avCodec));
+  }
+
   StreamMetadata& streamMetadata =
       containerMetadata_.allStreamMetadata[activeStreamIndex_];
   if (seekMode_ == SeekMode::approximate &&
@@ -476,6 +485,8 @@ void VideoDecoder::addVideoStream(
     // No more initialization needed for CPU.
   } else if (videoStreamOptions.device.type() == torch::kCUDA) {
     initializeContextOnCuda(videoStreamOptions.device, codecContext);
+  } else if (videoStreamOptions.device.type() == torch::kXPU) {
+    initializeContextOnXpu(videoStreamOptions.device, codecContext);
   } else {
     TORCH_CHECK(
         false, "Invalid device type: " + videoStreamOptions.device.str());
@@ -1058,6 +1069,13 @@ VideoDecoder::FrameOutput VideoDecoder::convertAVFrameToFrameOutput(
         avFrameStream, frameOutput, preAllocatedOutputTensor);
   } else if (streamInfo.videoStreamOptions.device.type() == torch::kCUDA) {
     convertAVFrameToFrameOutputOnCuda(
+        streamInfo.videoStreamOptions.device,
+        streamInfo.videoStreamOptions,
+        avFrameStream,
+        frameOutput,
+        preAllocatedOutputTensor);
+  } else if (streamInfo.videoStreamOptions.device.type() == torch::kXPU) {
+    convertAVFrameToFrameOutputOnXpu(
         streamInfo.videoStreamOptions.device,
         streamInfo.videoStreamOptions,
         avFrameStream,
