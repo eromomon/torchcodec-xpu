@@ -902,7 +902,7 @@ class TestVideoDecoder:
 
     # TODO investigate why this fails internally.
     @pytest.mark.skipif(in_fbcode(), reason="Compile test fails internally.")
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     def test_compile(self, device):
         decoder = VideoDecoder(NASA_VIDEO.path, device=device)
 

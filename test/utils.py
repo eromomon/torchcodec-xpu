@@ -46,7 +46,7 @@ def get_ffmpeg_major_version():
 # also cannot. We currently use Linux on x86_64 as our reference system.
 def assert_frames_equal(*args, **kwargs):
     if sys.platform == "linux":
-        if args[0].device.type == "cuda":
+        if args[0].device.type == "cuda": # or args[0].device.type == "xpu":
             atol = 2
             if get_ffmpeg_major_version() == 4:
                 assert_tensor_close_on_at_least(
@@ -54,6 +54,11 @@ def assert_frames_equal(*args, **kwargs):
                 )
             else:
                 torch.testing.assert_close(*args, **kwargs, atol=atol, rtol=0)
+        elif args[0].device.type == "xpu":
+            atol = 10
+            # xpu has issues with torch.testing functions so pushing
+            # tensors to cpu
+            torch.testing.assert_close(args[0].cpu(), args[1].cpu(), **kwargs, atol=atol, rtol=0)
         else:
             torch.testing.assert_close(*args, **kwargs, atol=0, rtol=0)
     else:

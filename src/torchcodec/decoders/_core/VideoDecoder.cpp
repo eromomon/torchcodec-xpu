@@ -458,8 +458,7 @@ void VideoDecoder::addStream(
               .value_or(avCodec));
     } else if (device.type() == torch::kXPU) {
       avCodec = makeAVCodecOnlyUseForCallingAVFindBestStream(
-          findXpuCodec(
-              videoStreamOptions.device, streamInfo.stream->codecpar->codec_id)
+          findXpuCodec(device, streamInfo.stream->codecpar->codec_id)
               .value_or(avCodec));
     }
   }
@@ -1869,6 +1868,8 @@ FrameDims getHeightAndWidthFromOptionsOrMetadata(
 FrameDims getHeightAndWidthFromOptionsOrAVFrame(
     const VideoDecoder::VideoStreamOptions& videoStreamOptions,
     const AVFrame& avFrame) {
+  printf(">>> avFrame.height=%d\n", avFrame.height);
+  printf(">>> avFrame.width=%d\n", avFrame.width);
   return FrameDims(
       videoStreamOptions.height.value_or(avFrame.height),
       videoStreamOptions.width.value_or(avFrame.width));
