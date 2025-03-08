@@ -178,6 +178,7 @@ torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
   TORCH_CHECK(desc.layers[0].num_planes == 1,
     "Expected 1 plane, got ", desc.num_layers);
 
+  printf(">>> dvrogozh: fd=%d\n", desc.objects[0].fd);
 
   std::unique_ptr<ze_context_handle_t> ze_context = std::make_unique<ze_context_handle_t>();
   ze_device_handle_t ze_device{};
@@ -204,6 +205,11 @@ torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
   TORCH_CHECK(res == ZE_RESULT_SUCCESS, "Failed to import fd=", desc.objects[0].fd);
 
   close(desc.objects[0].fd);
+  printf(">>> dvrogozh: usm_ptr=%p: 2\n", usm_ptr);
+  /*printf(">>> dvrogozh: pitch_0=%d\n", va_desc.layers[0].pitch[0]);
+  printf(">>> dvrogozh: pitch_1=%d\n", va_desc.layers[0].pitch[1]);
+  printf(">>> dvrogozh: pitch_2=%d\n", va_desc.layers[0].pitch[2]);
+  printf(">>> dvrogozh: pitch_3=%d\n", va_desc.layers[0].pitch[3]);*/
 
   std::unique_ptr<DLManagedTensor> dl_dst = std::make_unique<DLManagedTensor>();
   int64_t shape[3] = { desc.height, desc.width, 4 };
@@ -222,7 +228,11 @@ torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
   dl_dst->dl_tensor.strides = nullptr; //strides;
   dl_dst->dl_tensor.byte_offset = desc.layers[0].offset[0];
 
+  printf(">>> dvrogozh: 3\n");
   auto dst = at::fromDLPack(dl_dst.release());
+  printf(">>> dvrogozh: stride_0=%ld\n", dst.stride(0));
+  printf(">>> dvrogozh: stride_1=%ld\n", dst.stride(1));
+  printf(">>> dvrogozh: stride_2=%ld\n", dst.stride(2));
 
   return dst;
 }
@@ -319,10 +329,15 @@ torch::Tensor convertAVFrameToTensor(
 
   // Allocating intermediate tensor we can convert input to with VAAPI.
   // This tensor should be WxHx4 since VAAPI does not support RGB24
-  // and works only with RGB32.
+  // color formats and works only with RGB32 ones.
   VADisplay va_dpy = getVaDisplayFromAV(avFrame);
   // Importing tensor to VAAPI.
   vaapiSurface va_surface(va_dpy, width, height);
+
+  printf(">>> dvrogozh: width=%d\n", width);
+  printf(">>> dvrogozh: height=%d\n", height);
+  printf(">>> dvrogozh: va_dpy=%p\n", va_dpy);
+  printf(">>> dvrogozh: va_surface_id=%d\n", va_surface.id());
 
   vaapiVpContext va_vp(va_dpy, avFrame, width, height);
   va_vp.convertTo(va_surface.id());
@@ -338,6 +353,8 @@ void convertAVFrameToFrameOutputOnXpu(
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
   AVFrame* avFrame = avFrameStream.avFrame.get();
 
+  printf(">>> dvrogozh: colorspace=%d\n", avFrame->colorspace);
+  printf(">>> dvrogozh: bt709=%d\n", AVColorSpace::AVCOL_SPC_BT709);
 
   TORCH_CHECK(
       avFrame->format == AV_PIX_FMT_VAAPI,
@@ -349,6 +366,7 @@ void convertAVFrameToFrameOutputOnXpu(
   int width = frameDims.width;
   torch::Tensor& dst = frameOutput.data;
   if (preAllocatedOutputTensor.has_value()) {
+    printf(">>> dvrogozh: preallocated has value\n");
     dst = preAllocatedOutputTensor.value();
     auto shape = dst.sizes();
     TORCH_CHECK(
@@ -361,6 +379,7 @@ void convertAVFrameToFrameOutputOnXpu(
         "x3, got ",
         shape);
   } else {
+    printf(">>> dvrogozh: allocating new\n");
     dst = allocateEmptyHWCTensor(height, width, videoStreamOptions.device);
   }
 
@@ -369,7 +388,11 @@ void convertAVFrameToFrameOutputOnXpu(
   // We convert input to the RGBX color format with VAAPI getting WxHx4
   // tensor on the output.
   torch::Tensor dst_rgb4 = convertAVFrameToTensor(device, avFrame, width, height);
+
+  printf(">>> dvrogozh: !!!!!!!!!!!!!\n");
   dst.copy_(dst_rgb4.narrow(2, 0, 3));
+
+  printf(">>> dvrogozh: converted\n");
 
   auto end = std::chrono::high_resolution_clock::now();
 
@@ -377,6 +400,7 @@ void convertAVFrameToFrameOutputOnXpu(
   VLOG(9) << "NPP Conversion of frame height=" << height << " width=" << width
           << " took: " << duration.count() << "us" << std::endl;
 }
+
 
 // inspired by https://github.com/FFmpeg/FFmpeg/commit/ad67ea9
 // we have to do this because of an FFmpeg bug where hardware decoding is not
@@ -398,11 +422,13 @@ std::optional<const AVCodec*> findXpuCodec(
     for (int j = 0; (config = avcodec_get_hw_config(codec, j)) != nullptr;
          ++j) {
       if (config->device_type == AV_HWDEVICE_TYPE_VAAPI) {
+	printf(">>> dvrogozh: findXpuCodec: %p\n", codec);
         return codec;
       }
     }
   }
 
+  printf(">>> dvrogozh: findXpuCodec: null\n");
   return std::nullopt;
 }
 
