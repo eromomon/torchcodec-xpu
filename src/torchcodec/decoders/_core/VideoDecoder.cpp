@@ -1321,6 +1321,7 @@ torch::Tensor allocateEmptyHWCTensor(
 // Calling permute() is guaranteed to return a view as per the docs:
 // https://pytorch.org/docs/stable/generated/torch.permute.html
 torch::Tensor VideoDecoder::maybePermuteHWC2CHW(torch::Tensor& hwcTensor) {
+  printf(">>> dvrogozh: maybePermuteHWC2CHWL +\n");
   if (streamInfos_[activeStreamIndex_].videoStreamOptions.dimensionOrder ==
       "NHWC") {
     return hwcTensor;
