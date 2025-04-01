@@ -24,8 +24,6 @@ class DeviceInterface;
 // Do not call non-const APIs concurrently on the same object.
 class VideoDecoder {
  public:
-  ~VideoDecoder();
-
   // --------------------------------------------------------------------------
   // CONSTRUCTION API
   // --------------------------------------------------------------------------

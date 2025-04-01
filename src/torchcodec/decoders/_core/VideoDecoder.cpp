@@ -95,15 +95,6 @@ VideoDecoder::VideoDecoder(
   initializeDecoder();
 }
 
-VideoDecoder::~VideoDecoder() {
-  for (auto& [streamIndex, streamInfo] : streamInfos_) {
-    auto& deviceInterface = streamInfo.deviceInterface;
-    if (deviceInterface) {
-      deviceInterface->releaseContext(streamInfo.codecContext.get());
-    }
-  }
-}
-
 void VideoDecoder::initializeDecoder() {
   TORCH_CHECK(!initialized_, "Attempted double initialization.");
 
