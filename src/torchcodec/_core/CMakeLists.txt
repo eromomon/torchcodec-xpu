@@ -118,11 +118,11 @@ function(make_torchcodec_libraries
     )
 
     if(ENABLE_CUDA)
-        list(APPEND decoder_sources CudaDeviceInterface.cpp)
+        list(APPEND core_sources CudaDeviceInterface.cpp)
     endif()
 
     if(ENABLE_XPU)
-        list(APPEND decoder_sources XpuDeviceInterface.cpp)
+        list(APPEND core_sources XpuDeviceInterface.cpp)
     endif()
 
     set(core_library_dependencies
@@ -138,7 +138,7 @@ function(make_torchcodec_libraries
     endif()
 
     if(ENABLE_XPU)
-        list(APPEND decoder_library_dependencies
+        list(APPEND core_library_dependencies
             PkgConfig::L0 PkgConfig::LIBVA)
     endif()
 

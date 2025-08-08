@@ -779,7 +779,7 @@ class TestVideoDecoder:
             empty_frames.duration_seconds, NASA_VIDEO.empty_duration_seconds
         )
 
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     @pytest.mark.parametrize("seek_mode", ("exact", "approximate"))
     def test_get_frames_in_range_slice_indices_syntax(self, device, seek_mode):
         decoder = VideoDecoder(
@@ -831,7 +831,7 @@ class TestVideoDecoder:
         ).to(device)
         assert_frames_equal(frames387_None.data, reference_frame387_389)
 
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     @pytest.mark.parametrize("seek_mode", ("exact", "approximate"))
     @patch("torchcodec._core._metadata._get_stream_json_metadata")
     def test_get_frames_with_missing_num_frames_metadata(

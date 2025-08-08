@@ -6,9 +6,8 @@
 #include <ATen/DLConvertor.h>
 #include <c10/xpu/XPUStream.h>
 
-#include "src/torchcodec/decoders/_core/DeviceInterface.h"
-#include "src/torchcodec/decoders/_core/FFMPEGCommon.h"
-#include "src/torchcodec/decoders/_core/VideoDecoder.h"
+#include "src/torchcodec/_core/XpuDeviceInterface.h"
+#include "src/torchcodec/_core/FFMPEGCommon.h"
 
 extern "C" {
 #include <libavutil/hwcontext_vaapi.h>
@@ -17,6 +16,11 @@ extern "C" {
 
 namespace facebook::torchcodec {
 namespace {
+
+static bool g_xpu =
+    registerDeviceInterface(torch::kXPU, [](const torch::Device& device) {
+      return new XpuDeviceInterface(device);
+    });
 
 const int MAX_XPU_GPUS = 128;
 // Set to -1 to have an infinitely sized cache. Set it to 0 to disable caching.
@@ -36,7 +40,7 @@ torch::DeviceIndex getFFMPEGCompatibleDeviceIndex(const torch::Device& device) {
 
 void addToCacheIfCacheHasCapacity(
     const torch::Device& device,
-    AVCodecContext* codecContext) {
+    AVBufferRef* hwContext) {
   torch::DeviceIndex deviceIndex = getFFMPEGCompatibleDeviceIndex(device);
   if (static_cast<int>(deviceIndex) >= MAX_XPU_GPUS) {
     return;
@@ -47,8 +51,7 @@ void addToCacheIfCacheHasCapacity(
           MAX_CONTEXTS_PER_GPU_IN_CACHE) {
     return;
   }
-  g_cached_hw_device_ctxs[deviceIndex].push_back(codecContext->hw_device_ctx);
-  codecContext->hw_device_ctx = nullptr;
+  g_cached_hw_device_ctxs[deviceIndex].push_back(av_buffer_ref(hwContext));
 }
 
 AVBufferRef* getFromCache(const torch::Device& device) {
@@ -96,33 +99,32 @@ AVBufferRef* getVaapiContext(const torch::Device& device) {
   return hw_device_ctx;
 }
 
-void throwErrorIfNonXpuDevice(const torch::Device& device) {
-  TORCH_CHECK(
-      device.type() != torch::kCPU,
-      "Device functions should only be called if the device is not CPU.")
-  if (device.type() != torch::kXPU) {
-    throw std::runtime_error("Unsupported device: " + device.str());
-  }
-}
 } // namespace
 
-void releaseContextOnXpu(
-    const torch::Device& device,
-    AVCodecContext* codecContext) {
-  throwErrorIfNonXpuDevice(device);
-  addToCacheIfCacheHasCapacity(device, codecContext);
+XpuDeviceInterface::XpuDeviceInterface(const torch::Device& device)
+    : DeviceInterface(device) {
+  TORCH_CHECK(g_xpu, "XpuDeviceInterface was not registered!");
+  TORCH_CHECK(
+      device_.type() == torch::kXPU, "Unsupported device: ", device_.str());
 }
 
-void initializeContextOnXpu(
-    const torch::Device& device,
-    AVCodecContext* codecContext) {
-  throwErrorIfNonXpuDevice(device);
+XpuDeviceInterface::~XpuDeviceInterface() {
+  if (ctx_) {
+    addToCacheIfCacheHasCapacity(device_, ctx_);
+    av_buffer_unref(&ctx_);
+  }
+}
+
+void XpuDeviceInterface::initializeContext(AVCodecContext* codecContext) {
+  TORCH_CHECK(!ctx_, "FFmpeg HW device context already initialized");
+
   // It is important for pytorch itself to create the xpu context. If ffmpeg
   // creates the context it may not be compatible with pytorch.
   // This is a dummy tensor to initialize the xpu context.
   torch::Tensor dummyTensorForXpuInitialization = torch::empty(
-      {1}, torch::TensorOptions().dtype(torch::kUInt8).device(device));
-  codecContext->hw_device_ctx = getVaapiContext(device);
+      {1}, torch::TensorOptions().dtype(torch::kUInt8).device(device_));
+  ctx_ = getVaapiContext(device_);
+  codecContext->hw_device_ctx = av_buffer_ref(ctx_);
   return;
 }
 
@@ -367,12 +369,14 @@ torch::Tensor convertAVFrameToTensor(
   return va_surface.toTensor(device);
 }
 
-void convertAVFrameToFrameOutputOnXpu(
-    const torch::Device& device,
-    const VideoDecoder::VideoStreamOptions& videoStreamOptions,
+void XpuDeviceInterface::convertAVFrameToFrameOutput(
+    const VideoStreamOptions& videoStreamOptions,
+    [[maybe_unused]] const AVRational& timeBase,
     UniqueAVFrame& avFrame,
-    VideoDecoder::FrameOutput& frameOutput,
+    FrameOutput& frameOutput,
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
+  // TODO: consider to copy handling of CPU frame from CUDA
+  // TODO: consider to copy NV12 format check from CUDA
   TORCH_CHECK(
       avFrame->format == AV_PIX_FMT_VAAPI,
       "Expected format to be AV_PIX_FMT_VAAPI, got " +
@@ -395,7 +399,7 @@ void convertAVFrameToFrameOutputOnXpu(
         "x3, got ",
         shape);
   } else {
-    dst = allocateEmptyHWCTensor(height, width, videoStreamOptions.device);
+    dst = allocateEmptyHWCTensor(height, width, device_);
   }
 
   auto start = std::chrono::high_resolution_clock::now();
@@ -403,7 +407,7 @@ void convertAVFrameToFrameOutputOnXpu(
   // We convert input to the RGBX color format with VAAPI getting WxHx4
   // tensor on the output.
   torch::Tensor dst_rgb4 =
-      convertAVFrameToTensor(device, avFrame, width, height);
+      convertAVFrameToTensor(device_, avFrame, width, height);
   dst.copy_(dst_rgb4.narrow(2, 0, 3));
 
   auto end = std::chrono::high_resolution_clock::now();
@@ -417,11 +421,8 @@ void convertAVFrameToFrameOutputOnXpu(
 // we have to do this because of an FFmpeg bug where hardware decoding is not
 // appropriately set, so we just go off and find the matching codec for the CUDA
 // device
-std::optional<const AVCodec*> findXpuCodec(
-    const torch::Device& device,
+std::optional<const AVCodec*> XpuDeviceInterface::findCodec(
     const AVCodecID& codecId) {
-  throwErrorIfNonXpuDevice(device);
-
   void* i = nullptr;
   const AVCodec* codec = nullptr;
   while ((codec = av_codec_iterate(&i)) != nullptr) {

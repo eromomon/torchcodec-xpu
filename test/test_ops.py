@@ -183,7 +183,7 @@ class TestVideoDecoderOps:
         with pytest.raises(AssertionError):
             assert_frames_equal(frames[0], frames[-1])
 
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     def test_get_frames_at_indices_negative_indices(self, device):
         decoder = create_from_file(str(NASA_VIDEO.path))
         add_video_stream(decoder, device=device)
@@ -197,7 +197,7 @@ class TestVideoDecoderOps:
         assert_frames_equal(frames389and387and1[1], reference_frame387.to(device))
         assert_frames_equal(frames389and387and1[2], reference_frame1.to(device))
 
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     def test_get_frames_at_indices_fail_on_invalid_negative_indices(self, device):
         decoder = create_from_file(str(NASA_VIDEO.path))
         add_video_stream(decoder, device=device)
@@ -510,7 +510,7 @@ class TestVideoDecoderOps:
         get_ffmpeg_major_version() in (4, 5),
         reason="ffprobe isn't accurate on ffmpeg 4 and 5",
     )
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     def test_seek_mode_custom_frame_mappings(self, device):
         stream_index = 3  # custom_frame_index seek mode requires a stream index
         decoder = create_from_file(
@@ -1029,7 +1029,7 @@ class TestAudioDecoderOps:
         torch.testing.assert_close(frames_downsampled_to_8000, frames_8000_native)
 
     @pytest.mark.parametrize("buffering", (0, 1024))
-    @pytest.mark.parametrize("device", cpu_and_cuda())
+    @pytest.mark.parametrize("device", cpu_and_accelerators())
     def test_file_like_decoding(self, buffering, device):
         # Test to ensure that seeks and reads are actually going through the
         # methods on the IO object.
