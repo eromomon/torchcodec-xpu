@@ -11,6 +11,8 @@
 #include "src/torchcodec/_core/XpuDeviceInterface.h"
 
 extern "C" {
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/pixdesc.h>
 }
@@ -74,6 +76,13 @@ XpuDeviceInterface::~XpuDeviceInterface() {
   }
 }
 
+VADisplay getVaDisplayFromAV(AVFrame* avFrame) {
+  AVHWFramesContext* hwfc = (AVHWFramesContext*)avFrame->hw_frames_ctx->data;
+  AVHWDeviceContext* hwdc = hwfc->device_ctx;
+  AVVAAPIDeviceContext* vactx = (AVVAAPIDeviceContext*)hwdc->hwctx;
+  return vactx->display;
+}
+
 void XpuDeviceInterface::initializeContext(AVCodecContext* codecContext) {
   TORCH_CHECK(!ctx_, "FFmpeg HW device context already initialized");
 
@@ -87,54 +96,27 @@ void XpuDeviceInterface::initializeContext(AVCodecContext* codecContext) {
   return;
 }
 
-struct vaapiSurface {
-  vaapiSurface(VADisplay dpy, uint32_t width, uint32_t height);
-
-  ~vaapiSurface() {
-    vaDestroySurfaces(dpy_, &id_, 1);
-  }
-
-  inline VASurfaceID id() const {
-    return id_;
-  }
-
-  torch::Tensor toTensor(const torch::Device& device);
-
- private:
-  VADisplay dpy_;
-  VASurfaceID id_;
+struct xpuManagerCtx {
+  UniqueAVFrame avFrame;
+  ze_context_handle_t zeCtx = nullptr;
 };
-
-vaapiSurface::vaapiSurface(VADisplay dpy, uint32_t width, uint32_t height)
-    : dpy_(dpy) {
-  VASurfaceAttrib attrib{};
-
-  attrib.type = VASurfaceAttribPixelFormat;
-  attrib.flags = VA_SURFACE_ATTRIB_SETTABLE;
-  attrib.value.type = VAGenericValueTypeInteger;
-  attrib.value.value.i = VA_FOURCC_RGBX;
-
-  VAStatus res = vaCreateSurfaces(
-      dpy_, VA_RT_FORMAT_RGB32, width, height, &id_, 1, &attrib, 1);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS,
-      "Failed to create VAAPI surface: ",
-      vaErrorStr(res));
-}
 
 void deleter(DLManagedTensor* self) {
   std::unique_ptr<DLManagedTensor> tensor(self);
-  std::unique_ptr<ze_context_handle_t> context(
-      (ze_context_handle_t*)self->manager_ctx);
-  zeMemFree(*context, self->dl_tensor.data);
+  std::unique_ptr<xpuManagerCtx> context((xpuManagerCtx*)self->manager_ctx);
+  zeMemFree(context->zeCtx, self->dl_tensor.data);
 }
 
-torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
+torch::Tensor AVFrameToTensor(
+    const torch::Device& device,
+    const UniqueAVFrame& frame) {
+  TORCH_CHECK_EQ(frame->format, AV_PIX_FMT_VAAPI);
+
   VADRMPRIMESurfaceDescriptor desc{};
 
   VAStatus sts = vaExportSurfaceHandle(
-      dpy_,
-      id_,
+      getVaDisplayFromAV(frame.get()),
+      (VASurfaceID)(uintptr_t)frame->data[3],
       VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
       VA_EXPORT_SURFACE_READ_ONLY,
       &desc);
@@ -150,15 +132,14 @@ torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
       "Expected 1 plane, got ",
       desc.num_layers);
 
-  std::unique_ptr<ze_context_handle_t> ze_context =
-      std::make_unique<ze_context_handle_t>();
+  std::unique_ptr<xpuManagerCtx> context = std::make_unique<xpuManagerCtx>();
   ze_device_handle_t ze_device{};
   sycl::queue queue = c10::xpu::getCurrentXPUStream(device.index());
 
   queue
       .submit([&](sycl::handler& cgh) {
         cgh.host_task([&](const sycl::interop_handle& ih) {
-          *ze_context =
+          context->zeCtx =
               ih.get_native_context<sycl::backend::ext_oneapi_level_zero>();
           ze_device =
               ih.get_native_device<sycl::backend::ext_oneapi_level_zero>();
@@ -176,7 +157,12 @@ torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
   void* usm_ptr = nullptr;
 
   ze_result_t res = zeMemAllocDevice(
-      *ze_context, &alloc_desc, desc.objects[0].size, 0, ze_device, &usm_ptr);
+      context->zeCtx,
+      &alloc_desc,
+      desc.objects[0].size,
+      0,
+      ze_device,
+      &usm_ptr);
   TORCH_CHECK(
       res == ZE_RESULT_SUCCESS, "Failed to import fd=", desc.objects[0].fd);
 
@@ -185,7 +171,16 @@ torch::Tensor vaapiSurface::toTensor(const torch::Device& device) {
   std::unique_ptr<DLManagedTensor> dl_dst = std::make_unique<DLManagedTensor>();
   int64_t shape[3] = {desc.height, desc.width, 4};
 
-  dl_dst->manager_ctx = ze_context.release();
+  context->avFrame.reset(av_frame_alloc());
+  TORCH_CHECK(context->avFrame.get(), "Failed to allocate AVFrame");
+
+  int status = av_frame_ref(context->avFrame.get(), frame.get());
+  TORCH_CHECK(
+      status >= 0,
+      "Failed to reference AVFrame: ",
+      getFFMPEGErrorStringFromErrorCode(status));
+
+  dl_dst->manager_ctx = context.release();
   dl_dst->deleter = deleter;
   dl_dst->dl_tensor.data = usm_ptr;
   dl_dst->dl_tensor.device.device_type = kDLOneAPI;
@@ -208,124 +203,6 @@ VADisplay getVaDisplayFromAV(UniqueAVFrame& avFrame) {
   AVHWDeviceContext* hwdc = hwfc->device_ctx;
   AVVAAPIDeviceContext* vactx = (AVVAAPIDeviceContext*)hwdc->hwctx;
   return vactx->display;
-}
-
-struct vaapiVpContext {
-  VADisplay dpy_;
-  VAConfigID config_id_ = VA_INVALID_ID;
-  VAContextID context_id_ = VA_INVALID_ID;
-  VABufferID pipeline_buf_id_ = VA_INVALID_ID;
-
-  // These structures must be available thru all life
-  // circle of the struct since they are reused by the media
-  // driver internally during vaRenderPicture().
-  VAProcPipelineParameterBuffer pipeline_{};
-  VARectangle surface_region_{};
-
-  vaapiVpContext() = delete;
-  vaapiVpContext(
-      VADisplay dpy,
-      UniqueAVFrame& avFrame,
-      uint16_t width,
-      uint16_t height);
-
-  ~vaapiVpContext() {
-    if (pipeline_buf_id_ != VA_INVALID_ID)
-      vaDestroyBuffer(dpy_, pipeline_buf_id_);
-    if (context_id_ != VA_INVALID_ID)
-      vaDestroyContext(dpy_, context_id_);
-    if (config_id_ != VA_INVALID_ID)
-      vaDestroyConfig(dpy_, config_id_);
-  }
-
-  void convertTo(VASurfaceID id);
-};
-
-vaapiVpContext::vaapiVpContext(
-    VADisplay dpy,
-    UniqueAVFrame& avFrame,
-    uint16_t width,
-    uint16_t height)
-    : dpy_(dpy) {
-  VAStatus res = vaCreateConfig(
-      dpy_, VAProfileNone, VAEntrypointVideoProc, nullptr, 0, &config_id_);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS,
-      "Failed to create VAAPI config: ",
-      vaErrorStr(res));
-
-  res = vaCreateContext(
-      dpy_,
-      config_id_,
-      width,
-      height,
-      VA_PROGRESSIVE,
-      nullptr,
-      0,
-      &context_id_);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS,
-      "Failed to create VAAPI VP context: ",
-      vaErrorStr(res));
-
-  surface_region_.width = width;
-  surface_region_.height = height;
-
-  pipeline_.surface = (VASurfaceID)(uintptr_t)avFrame->data[3];
-  pipeline_.surface_region = &surface_region_;
-  pipeline_.output_region = &surface_region_;
-  if (avFrame->colorspace == AVColorSpace::AVCOL_SPC_BT709)
-    pipeline_.surface_color_standard = VAProcColorStandardBT709;
-
-  res = vaCreateBuffer(
-      dpy_,
-      context_id_,
-      VAProcPipelineParameterBufferType,
-      sizeof(pipeline_),
-      1,
-      &pipeline_,
-      &pipeline_buf_id_);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS, "vaCreateBuffer failed: ", vaErrorStr(res));
-}
-
-void vaapiVpContext::convertTo(VASurfaceID id) {
-  VAStatus res = vaBeginPicture(dpy_, context_id_, id);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS, "vaBeginPicture failed: ", vaErrorStr(res));
-
-  res = vaRenderPicture(dpy_, context_id_, &pipeline_buf_id_, 1);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS, "vaRenderPicture failed: ", vaErrorStr(res));
-
-  res = vaEndPicture(dpy_, context_id_);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS, "vaEndPicture failed: ", vaErrorStr(res));
-
-  res = vaSyncSurface(dpy_, id);
-  TORCH_CHECK(
-      res == VA_STATUS_SUCCESS, "vaSyncSurface failed: ", vaErrorStr(res));
-}
-
-torch::Tensor convertAVFrameToTensor(
-    const torch::Device& device,
-    UniqueAVFrame& avFrame,
-    int width,
-    int height) {
-  TORCH_CHECK(height > 0, "height must be > 0, got: ", height);
-  TORCH_CHECK(width > 0, "width must be > 0, got: ", width);
-
-  // Allocating intermediate tensor we can convert input to with VAAPI.
-  // This tensor should be WxHx4 since VAAPI does not support RGB24
-  // and works only with RGB32.
-  VADisplay va_dpy = getVaDisplayFromAV(avFrame);
-  // Importing tensor to VAAPI.
-  vaapiSurface va_surface(va_dpy, width, height);
-
-  vaapiVpContext va_vp(va_dpy, avFrame, width, height);
-  va_vp.convertTo(va_surface.id());
-
-  return va_surface.toTensor(device);
 }
 
 void XpuDeviceInterface::convertAVFrameToFrameOutput(
@@ -362,17 +239,51 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
   }
 
   auto start = std::chrono::high_resolution_clock::now();
+  // We need to compare the current frame context with our previous frame
+  // context. If they are different, then we need to re-create our colorspace
+  // conversion objects. We create our colorspace conversion objects late so
+  // that we don't have to depend on the unreliable metadata in the header.
+  // And we sometimes re-create them because it's possible for frame
+  // resolution to change mid-stream. Finally, we want to reuse the colorspace
+  // conversion objects as much as possible for performance reasons.
+  enum AVPixelFormat frameFormat =
+      static_cast<enum AVPixelFormat>(avFrame->format);
+  FiltersContext filtersContext;
+
+  filtersContext.inputWidth = avFrame->width;
+  filtersContext.inputHeight = avFrame->height;
+  filtersContext.inputFormat = frameFormat;
+  filtersContext.inputAspectRatio = avFrame->sample_aspect_ratio;
+  // Actual output color format will be set via filter options
+  filtersContext.outputFormat = AV_PIX_FMT_VAAPI;
+  filtersContext.timeBase = timeBase;
+  filtersContext.hwFramesCtx.reset(av_buffer_ref(avFrame->hw_frames_ctx));
+
+  std::stringstream filters;
+  filters << "scale_vaapi=" << width << ":" << height;
+  filters << ":format=rgba"; //: out_color_matrix=bt709:out_range=tv";
+
+  filtersContext.filters = filters.str();
+
+  if (!filterGraphContext_ || prevFiltersContext_ != filtersContext) {
+    filterGraphContext_ =
+        std::make_unique<FilterGraph>(filtersContext, videoStreamOptions);
+    prevFiltersContext_ = std::move(filtersContext);
+  }
 
   // We convert input to the RGBX color format with VAAPI getting WxHx4
   // tensor on the output.
-  torch::Tensor dst_rgb4 =
-      convertAVFrameToTensor(device_, avFrame, width, height);
+  UniqueAVFrame filteredAVFrame = filterGraphContext_->convert(avFrame);
+
+  TORCH_CHECK_EQ(filteredAVFrame->format, AV_PIX_FMT_VAAPI);
+
+  torch::Tensor dst_rgb4 = AVFrameToTensor(device_, filteredAVFrame);
   dst.copy_(dst_rgb4.narrow(2, 0, 3));
 
   auto end = std::chrono::high_resolution_clock::now();
 
   std::chrono::duration<double, std::micro> duration = end - start;
-  VLOG(9) << "NPP Conversion of frame height=" << height << " width=" << width
+  VLOG(9) << "Conversion of frame height=" << height << " width=" << width
           << " took: " << duration.count() << "us" << std::endl;
 }
 

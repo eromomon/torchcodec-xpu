@@ -7,6 +7,7 @@
 #pragma once
 
 #include "src/torchcodec/_core/DeviceInterface.h"
+#include "src/torchcodec/_core/FilterGraph.h"
 
 namespace facebook::torchcodec {
 
@@ -30,6 +31,12 @@ class XpuDeviceInterface : public DeviceInterface {
 
  private:
   UniqueAVBufferRef ctx_;
+
+  std::unique_ptr<FilterGraph> filterGraphContext_;
+
+  // Used to know whether a new FilterGraphContext should
+  // be created before decoding a new frame.
+  FiltersContext prevFiltersContext_;
 };
 
 } // namespace facebook::torchcodec
