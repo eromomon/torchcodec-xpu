@@ -10,6 +10,8 @@
 #include "src/torchcodec/_core/FFMPEGCommon.h"
 
 extern "C" {
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavutil/hwcontext_vaapi.h>
 #include <libavutil/pixdesc.h>
 }
@@ -100,6 +102,20 @@ AVBufferRef* getVaapiContext(const torch::Device& device) {
 }
 
 } // namespace
+
+bool XpuDeviceInterface::DecodedFrameContext::operator==(
+    const XpuDeviceInterface::DecodedFrameContext& other) {
+  return decodedWidth == other.decodedWidth &&
+      decodedHeight == other.decodedHeight &&
+      decodedFormat == other.decodedFormat &&
+      expectedWidth == other.expectedWidth &&
+      expectedHeight == other.expectedHeight;
+}
+
+bool XpuDeviceInterface::DecodedFrameContext::operator!=(
+    const XpuDeviceInterface::DecodedFrameContext& other) {
+  return !(*this == other);
+}
 
 XpuDeviceInterface::XpuDeviceInterface(const torch::Device& device)
     : DeviceInterface(device) {
@@ -371,75 +387,243 @@ torch::Tensor convertAVFrameToTensor(
 
 void XpuDeviceInterface::convertAVFrameToFrameOutput(
     const VideoStreamOptions& videoStreamOptions,
-    [[maybe_unused]] const AVRational& timeBase,
+    const AVRational& timeBase,
     UniqueAVFrame& avFrame,
     FrameOutput& frameOutput,
     std::optional<torch::Tensor> preAllocatedOutputTensor) {
-  // TODO: consider to copy handling of CPU frame from CUDA
-  // TODO: consider to copy NV12 format check from CUDA
-  TORCH_CHECK(
-      avFrame->format == AV_PIX_FMT_VAAPI,
-      "Expected format to be AV_PIX_FMT_VAAPI, got " +
-          std::string(av_get_pix_fmt_name((AVPixelFormat)avFrame->format)));
-  auto frameDims =
-      getHeightAndWidthFromOptionsOrAVFrame(videoStreamOptions, avFrame);
-  int height = frameDims.height;
-  int width = frameDims.width;
-  torch::Tensor& dst = frameOutput.data;
-  if (preAllocatedOutputTensor.has_value()) {
-    dst = preAllocatedOutputTensor.value();
-    auto shape = dst.sizes();
+    auto frameDims =
+        getHeightAndWidthFromOptionsOrAVFrame(videoStreamOptions, avFrame);
+    int expectedOutputHeight = frameDims.height;
+    int expectedOutputWidth = frameDims.width;
+
+    if (preAllocatedOutputTensor.has_value()) {
+        auto shape = preAllocatedOutputTensor.value().sizes();
+        TORCH_CHECK(
+            (shape.size() == 3) && (shape[0] == expectedOutputHeight) &&
+                (shape[1] == expectedOutputWidth) && (shape[2] == 3),
+            "Expected pre-allocated tensor of shape ",
+            expectedOutputHeight,
+            "x",
+            expectedOutputWidth,
+            "x3, got ",
+            shape);
+    }
+
+    torch::Tensor outputTensor;
+    enum AVPixelFormat frameFormat =
+        static_cast<enum AVPixelFormat>(avFrame->format);
+    auto frameContext = DecodedFrameContext{
+        avFrame->width,
+        avFrame->height,
+        frameFormat,
+        avFrame->sample_aspect_ratio,
+        expectedOutputWidth,
+        expectedOutputHeight};
+
+    if (!filterGraphContext_.filterGraph || prevFrameContext_ != frameContext) {
+        createFilterGraph(frameContext, videoStreamOptions, timeBase);
+        prevFrameContext_ = frameContext;
+    }
+
+    outputTensor = convertAVFrameToTensorUsingFilterGraph(avFrame);
+
+    auto shape = outputTensor.sizes();
     TORCH_CHECK(
-        (shape.size() == 3) && (shape[0] == height) && (shape[1] == width) &&
-            (shape[2] == 3),
-        "Expected tensor of shape ",
-        height,
+        (shape.size() == 3) && (shape[0] == expectedOutputHeight) &&
+            (shape[1] == expectedOutputWidth) && (shape[2] == 3),
+        "Expected output tensor of shape ",
+        expectedOutputHeight,
         "x",
-        width,
+        expectedOutputWidth,
         "x3, got ",
         shape);
-  } else {
-    dst = allocateEmptyHWCTensor(height, width, device_);
-  }
 
-  auto start = std::chrono::high_resolution_clock::now();
-
-  // We convert input to the RGBX color format with VAAPI getting WxHx4
-  // tensor on the output.
-  torch::Tensor dst_rgb4 =
-      convertAVFrameToTensor(device_, avFrame, width, height);
-  dst.copy_(dst_rgb4.narrow(2, 0, 3));
-
-  auto end = std::chrono::high_resolution_clock::now();
-
-  std::chrono::duration<double, std::micro> duration = end - start;
-  VLOG(9) << "NPP Conversion of frame height=" << height << " width=" << width
-          << " took: " << duration.count() << "us" << std::endl;
+    if (preAllocatedOutputTensor.has_value()) {
+        preAllocatedOutputTensor.value().copy_(outputTensor);
+        frameOutput.data = preAllocatedOutputTensor.value();
+    } else {
+        frameOutput.data = outputTensor;
+    }
 }
 
-// inspired by https://github.com/FFmpeg/FFmpeg/commit/ad67ea9
-// we have to do this because of an FFmpeg bug where hardware decoding is not
-// appropriately set, so we just go off and find the matching codec for the CUDA
-// device
-std::optional<const AVCodec*> XpuDeviceInterface::findCodec(
-    const AVCodecID& codecId) {
-  void* i = nullptr;
-  const AVCodec* codec = nullptr;
-  while ((codec = av_codec_iterate(&i)) != nullptr) {
-    if (codec->id != codecId || !av_codec_is_decoder(codec)) {
-      continue;
-    }
+torch::Tensor XpuDeviceInterface::convertAVFrameToTensorUsingFilterGraph(
+    const UniqueAVFrame& avFrame) {
+  int status = av_buffersrc_write_frame(
+      filterGraphContext_.sourceContext, avFrame.get());
+  TORCH_CHECK(
+      status >= AVSUCCESS, "Failed to add frame to buffer source context");
 
-    const AVCodecHWConfig* config = nullptr;
-    for (int j = 0; (config = avcodec_get_hw_config(codec, j)) != nullptr;
-         ++j) {
-      if (config->device_type == AV_HWDEVICE_TYPE_VAAPI) {
-        return codec;
-      }
-    }
+  UniqueAVFrame filteredAVFrame(av_frame_alloc());
+  status = av_buffersink_get_frame(
+      filterGraphContext_.sinkContext, filteredAVFrame.get());
+  TORCH_CHECK_EQ(filteredAVFrame->format, AV_PIX_FMT_RGB24);
+
+  auto frameDims = getHeightAndWidthFromResizedAVFrame(*filteredAVFrame.get());
+  int height = frameDims.height;
+  int width = frameDims.width;
+  std::vector<int64_t> shape = {height, width, 3};
+  std::vector<int64_t> strides = {filteredAVFrame->linesize[0], 3, 1};
+  AVFrame* filteredAVFramePtr = filteredAVFrame.release();
+  auto deleter = [filteredAVFramePtr](void*) {
+    UniqueAVFrame avFrameToDelete(filteredAVFramePtr);
+  };
+  return torch::from_blob(
+      filteredAVFramePtr->data[0], shape, strides, deleter, {torch::kUInt8});
+}
+
+void XpuDeviceInterface::createFilterGraph(
+    const DecodedFrameContext& frameContext,
+    const VideoStreamOptions& videoStreamOptions,
+    const AVRational& timeBase) {
+  filterGraphContext_.filterGraph.reset(avfilter_graph_alloc());
+  TORCH_CHECK(filterGraphContext_.filterGraph.get() != nullptr);
+
+  if (videoStreamOptions.ffmpegThreadCount.has_value()) {
+    filterGraphContext_.filterGraph->nb_threads =
+        videoStreamOptions.ffmpegThreadCount.value();
   }
 
-  return std::nullopt;
+  const AVFilter* buffersrc = avfilter_get_by_name("buffer");
+  const AVFilter* buffersink = avfilter_get_by_name("buffersink");
+
+  std::stringstream filterArgs;
+  filterArgs << "video_size=" << frameContext.decodedWidth << "x"
+             << frameContext.decodedHeight;
+  filterArgs << ":pix_fmt=" << frameContext.decodedFormat;
+  filterArgs << ":time_base=" << timeBase.num << "/" << timeBase.den;
+  filterArgs << ":pixel_aspect=" << frameContext.decodedAspectRatio.num << "/"
+             << frameContext.decodedAspectRatio.den;
+
+  int status = avfilter_graph_create_filter(
+      &filterGraphContext_.sourceContext,
+      buffersrc,
+      "in",
+      filterArgs.str().c_str(),
+      nullptr,
+      filterGraphContext_.filterGraph.get());
+  TORCH_CHECK(
+      status >= 0,
+      "Failed to create filter graph: ",
+      filterArgs.str(),
+      ": ",
+      getFFMPEGErrorStringFromErrorCode(status));
+
+  status = avfilter_graph_create_filter(
+      &filterGraphContext_.sinkContext,
+      buffersink,
+      "out",
+      nullptr,
+      nullptr,
+      filterGraphContext_.filterGraph.get());
+  TORCH_CHECK(
+      status >= 0,
+      "Failed to create filter graph: ",
+      getFFMPEGErrorStringFromErrorCode(status));
+
+  enum AVPixelFormat pix_fmts[] = {AV_PIX_FMT_RGB24, AV_PIX_FMT_NONE};
+
+  status = av_opt_set_int_list(
+      filterGraphContext_.sinkContext,
+      "pix_fmts",
+      pix_fmts,
+      AV_PIX_FMT_NONE,
+      AV_OPT_SEARCH_CHILDREN);
+  TORCH_CHECK(
+      status >= 0,
+      "Failed to set output pixel formats: ",
+      getFFMPEGErrorStringFromErrorCode(status));
+
+  UniqueAVFilterInOut outputs(avfilter_inout_alloc());
+  UniqueAVFilterInOut inputs(avfilter_inout_alloc());
+
+  outputs->name = av_strdup("in");
+  outputs->filter_ctx = filterGraphContext_.sourceContext;
+  outputs->pad_idx = 0;
+  outputs->next = nullptr;
+  inputs->name = av_strdup("out");
+  inputs->filter_ctx = filterGraphContext_.sinkContext;
+  inputs->pad_idx = 0;
+  inputs->next = nullptr;
+
+  std::stringstream description;
+  description << "scale=" << frameContext.expectedWidth << ":"
+              << frameContext.expectedHeight;
+  description << ":sws_flags=bilinear";
+
+  AVFilterInOut* outputsTmp = outputs.release();
+  AVFilterInOut* inputsTmp = inputs.release();
+  status = avfilter_graph_parse_ptr(
+      filterGraphContext_.filterGraph.get(),
+      description.str().c_str(),
+      &inputsTmp,
+      &outputsTmp,
+      nullptr);
+  outputs.reset(outputsTmp);
+  inputs.reset(inputsTmp);
+  TORCH_CHECK(
+      status >= 0,
+      "Failed to parse filter description: ",
+      getFFMPEGErrorStringFromErrorCode(status));
+
+  status =
+      avfilter_graph_config(filterGraphContext_.filterGraph.get(), nullptr);
+  TORCH_CHECK(
+      status >= 0,
+      "Failed to configure filter graph: ",
+      getFFMPEGErrorStringFromErrorCode(status));
+}
+
+void XpuDeviceInterface::createSwsContext(
+    const DecodedFrameContext& frameContext,
+    const enum AVColorSpace colorspace) {
+  SwsContext* swsContext = sws_getContext(
+      frameContext.decodedWidth,
+      frameContext.decodedHeight,
+      frameContext.decodedFormat,
+      frameContext.expectedWidth,
+      frameContext.expectedHeight,
+      AV_PIX_FMT_RGB24,
+      SWS_BILINEAR,
+      nullptr,
+      nullptr,
+      nullptr);
+  TORCH_CHECK(swsContext, "sws_getContext() returned nullptr");
+
+  int* invTable = nullptr;
+  int* table = nullptr;
+  int srcRange, dstRange, brightness, contrast, saturation;
+  int ret = sws_getColorspaceDetails(
+      swsContext,
+      &invTable,
+      &srcRange,
+      &table,
+      &dstRange,
+      &brightness,
+      &contrast,
+      &saturation);
+  TORCH_CHECK(ret != -1, "sws_getColorspaceDetails returned -1");
+
+  const int* colorspaceTable = sws_getCoefficients(colorspace);
+  ret = sws_setColorspaceDetails(
+      swsContext,
+      colorspaceTable,
+      srcRange,
+      colorspaceTable,
+      dstRange,
+      brightness,
+      contrast,
+      saturation);
+  TORCH_CHECK(ret != -1, "sws_setColorspaceDetails returned -1");
+
+  swsContext_.reset(swsContext);
+}
+
+std::optional<const AVCodec*> XpuDeviceInterface::findCodec(const AVCodecID& codecId) {
+    const AVCodec* codec = avcodec_find_decoder(codecId);
+    if (!codec) {
+        return std::nullopt;
+    }
+    return codec;
 }
 
 } // namespace facebook::torchcodec
