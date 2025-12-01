@@ -17,6 +17,8 @@ extern "C" {
 #include <libavutil/pixdesc.h>
 }
 
+//  AVFILTER_DEFINE_CLASS(vaapi_vpp);
+
 namespace facebook::torchcodec {
 namespace {
 
@@ -105,6 +107,28 @@ void deleter(DLManagedTensor* self) {
   std::unique_ptr<DLManagedTensor> tensor(self);
   std::unique_ptr<xpuManagerCtx> context((xpuManagerCtx*)self->manager_ctx);
   zeMemFree(context->zeCtx, self->dl_tensor.data);
+}
+
+void zeroChromaNV12(AVFrame* frame) {
+  // NV12: data[0] = Y plane, data[1] = interleaved UV plane // THIS FOR CPU IMPLEMENTATION
+  // int chroma_height = frame->height / 2;
+  // int chroma_width = frame->width;
+  // memset(frame->data[1], 0, chroma_height * chroma_width);
+  // AVFrame* sw_frame = av_frame_alloc();
+  // av_hwframe_transfer_data(sw_frame, hw_frame, 0);
+
+  // Copy to CPU the hw_context frame to a system memory frame
+  AVFrame* sw_frame = av_frame_alloc();
+  int ret = av_hwframe_transfer_data(sw_frame, frame, 0);
+  TORCH_CHECK(ret >= 0, "Failed to transfer frame data from hardware to system memory");
+
+  for (int y = 0; y < sw_frame->height / 2; ++y) {
+    memset(sw_frame->data[1] + y * sw_frame->linesize[1], 0, sw_frame->width);
+  }
+  // Copy back to the hw_context frame from the system memory frame
+  ret = av_hwframe_transfer_data(frame, sw_frame, 0);
+  TORCH_CHECK(ret >= 0, "Failed to transfer frame data from system memory to hardware");
+  av_frame_free(&sw_frame); 
 }
 
 torch::Tensor AVFrameToTensor(
@@ -217,6 +241,10 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
       avFrame->format == AV_PIX_FMT_VAAPI,
       "Expected format to be AV_PIX_FMT_VAAPI, got " +
           std::string(av_get_pix_fmt_name((AVPixelFormat)avFrame->format)));
+
+  // For NV12 we need to zero out the chroma plane because
+  zeroChromaNV12(avFrame.get());
+
   auto frameDims =
       getHeightAndWidthFromOptionsOrAVFrame(videoStreamOptions, avFrame);
   int height = frameDims.height;
@@ -261,7 +289,9 @@ void XpuDeviceInterface::convertAVFrameToFrameOutput(
 
   std::stringstream filters;
   filters << "scale_vaapi=" << width << ":" << height;
-  filters << ":format=rgba"; //: out_color_matrix=bt709:out_range=tv";
+  filters << ":format=rgba:out_range=pc";
+  // filters << ":format=rgba:out_color_matrix=bt709:out_range=tv";
+  // filters << ":format=rgba:force_bt709=1"; //: out_color_matrix=bt709:out_range=tv";
 
   filtersContext.filters = filters.str();
 

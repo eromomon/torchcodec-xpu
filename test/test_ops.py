@@ -1244,4 +1244,6 @@ class TestAudioEncoderOps:
 
 
 if __name__ == "__main__":
-    pytest.main()
+    ## pytest.main()
+    import pytest
+    pytest.main(["-k", "TestVideoDecoderOps and test_xpu_decoder", "--capture=no"])
