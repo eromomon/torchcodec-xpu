@@ -168,13 +168,16 @@ class DeviceInterface {
     STD_TORCH_CHECK(false, "convertTensorToAVFrameForEncoding not implemented");
   }
 
-  // Function used for video encoding, only implemented in CudaDeviceInterface.
-  // It is here to isolate CUDA dependencies from CPU builds
+  // Returns the pixel format the encoder should use for this device.
+  // Default policy lives in DeviceInterface.cpp; HW devices may override.
+  virtual AVPixelFormat getEncodingPixelFormat(
+      const AVCodec& avCodec,
+      const std::optional<std::string>& userPixelFormat) const;
+
+  // No-op on CPU so the encoder can call it unconditionally; HW devices
+  // override to attach an AVHWFramesContext.
   virtual void setupHardwareFrameContextForEncoding(
-      [[maybe_unused]] AVCodecContext* codecContext) {
-    STD_TORCH_CHECK(
-        false, "setupHardwareFrameContextForEncoding not implemented");
-  }
+      [[maybe_unused]] AVCodecContext* codecContext) {}
 
   virtual std::optional<const AVCodec*> findHardwareEncoder(
       [[maybe_unused]] const AVCodecID& codecId) {
@@ -202,6 +205,10 @@ TORCHCODEC_THIRD_PARTY_API std::unique_ptr<DeviceInterface>
 createDeviceInterface(
     const StableDevice& device,
     const std::string_view variant = "default");
+
+// Preferred encoding variant per device type (decoding is unaffected).
+TORCHCODEC_THIRD_PARTY_API std::string_view getDefaultEncodingVariant(
+    StableDeviceType deviceType);
 
 torch::stable::Tensor rgbAVFrameToTensor(const UniqueAVFrame& avFrame);
 

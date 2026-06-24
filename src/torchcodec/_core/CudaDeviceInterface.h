@@ -48,6 +48,10 @@ class CudaDeviceInterface : public DeviceInterface {
       int frameIndex,
       AVCodecContext* codecContext) override;
 
+  AVPixelFormat getEncodingPixelFormat(
+      const AVCodec& avCodec,
+      const std::optional<std::string>& userPixelFormat) const override;
+
   void setupHardwareFrameContextForEncoding(
       AVCodecContext* codecContext) override;
 
