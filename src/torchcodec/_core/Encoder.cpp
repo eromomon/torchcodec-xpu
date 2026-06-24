@@ -176,7 +176,7 @@ torch::stable::Tensor validate_frames(
   return torch::stable::contiguous(frames);
 }
 
-AVPixelFormat validate_pixel_format(
+/* AVPixelFormat validate_pixel_format(
     const AVCodec& av_codec,
     const std::string& target_pixel_format) {
   AVPixelFormat pixel_format = av_get_pix_fmt(target_pixel_format.c_str());
@@ -206,7 +206,7 @@ AVPixelFormat validate_pixel_format(
     error_msg << " " << av_get_pix_fmt_name(supported_formats[i]);
   }
   STD_TORCH_CHECK(false, error_msg.str());
-}
+} */
 
 void try_to_validate_codec_option(
     const AVCodec& av_codec,
@@ -266,8 +266,7 @@ void sort_codec_options(
   // format options. The sorted options are returned into two separate dicts.
   const AVClass* format_class = avformat_get_class();
   const AVClass* muxer_class = av_format_context->oformat
-      ? av_format_context->oformat->priv_class
-      : nullptr;
+      ? av_format_context->oformat->priv_class : nullptr;
   for (const auto& [key, value] : extra_options) {
     // Check if option is generic format option
     const AVOption* fmt_opt = av_opt_find2(
@@ -426,7 +425,8 @@ int MultiStreamEncoder::add_audio_stream(
 }
 
 void MultiStreamEncoder::initialize_video_stream(VideoStream& video_stream) {
-  auto device_type = video_stream.device_interface->device().type();
+  [[maybe_unused]] auto device_type =
+      video_stream.device_interface->device().type();
 
   const AVCodec* av_codec = nullptr;
   // If codec arg is provided, find codec using logic similar to FFmpeg:
@@ -473,32 +473,37 @@ void MultiStreamEncoder::initialize_video_stream(VideoStream& video_stream) {
 
   int out_height = video_stream.in_height;
   int out_width = video_stream.in_width;
-  AVPixelFormat out_pixel_format = AV_PIX_FMT_NONE;
+  // Pixel-format selection is delegated to the device interface.
+  AVPixelFormat out_pixel_format =
+      video_stream.device_interface->get_encoding_pixel_format(
+          *av_codec, video_stream.options.pixel_format);
 
-  if (video_stream.options.pixel_format.has_value()) {
-    if (device_type == kStableCUDA) {
+  /* AVPixelFormat outPixelFormat = AV_PIX_FMT_NONE;
+
+  if (videoStream.options.pixelFormat.has_value()) {
+    if (deviceType == kStableCUDA) {
       STD_TORCH_CHECK(
           false,
           "Video encoding on GPU currently only supports the nv12 pixel format. "
           "Do not set pixel_format to use nv12 by default.");
     }
-    out_pixel_format = validate_pixel_format(
-        *av_codec, video_stream.options.pixel_format.value());
+    outPixelFormat =
+        validatePixelFormat(*avCodec, videoStream.options.pixelFormat.value());
   } else {
-    if (device_type == kStableCUDA) {
+    if (deviceType == kStableCUDA) {
       // Default to nv12 pixel format when encoding on GPU.
-      out_pixel_format = DeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
+      outPixelFormat = DeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
     } else {
-      const AVPixelFormat* formats = get_supported_pixel_formats(*av_codec);
+      const AVPixelFormat* formats = getSupportedPixelFormats(*avCodec);
       // Use first listed pixel format as default (often yuv420p).
       // This is similar to FFmpeg's logic:
       // https://www.ffmpeg.org/doxygen/4.0/decode_8c_source.html#l01087
       // If pixel formats are undefined for some reason, try yuv420p
-      out_pixel_format = (formats && formats[0] != AV_PIX_FMT_NONE)
+      outPixelFormat = (formats && formats[0] != AV_PIX_FMT_NONE)
           ? formats[0]
           : AV_PIX_FMT_YUV420P;
     }
-  }
+  } */        
 
   // Configure codec parameters
   video_stream.av_codec_context->codec_id = av_codec->id;
@@ -543,12 +548,14 @@ void MultiStreamEncoder::initialize_video_stream(VideoStream& video_stream) {
         0);
   }
 
-  if (device_type == kStableCUDA) {
-    video_stream.device_interface->register_hardware_device_with_codec(
-        video_stream.av_codec_context.get());
-    video_stream.device_interface->setup_hardware_frame_context_for_encoding(
-        video_stream.av_codec_context.get());
-  }
+  // if (device_type == kStableCUDA) {
+  // Hardware setup is a no-op on CPU; HW devices override these hooks.
+  video_stream.device_interface->register_hardware_device_with_codec(
+      video_stream.av_codec_context.get());
+  video_stream.device_interface->setup_hardware_frame_context_for_encoding(
+      video_stream.av_codec_context.get());
+  // }
+
 
   int status = avcodec_open2(
       video_stream.av_codec_context.get(),

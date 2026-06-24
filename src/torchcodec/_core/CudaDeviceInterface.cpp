@@ -241,8 +241,7 @@ void CudaDeviceInterface::convert_av_frame_to_frame_output(
     FrameOutput& frame_output,
     std::optional<torch::stable::Tensor> pre_allocated_output_tensor) {
   validate_pre_allocated_tensor_shape(
-      pre_allocated_output_tensor,
-      FrameDims(av_frame->height, av_frame->width));
+      pre_allocated_output_tensor, FrameDims(av_frame->height, av_frame->width));
 
   has_decoded_frame_ = true;
 
@@ -276,8 +275,7 @@ void CudaDeviceInterface::convert_av_frame_to_frame_output(
     } else {
       // Reason 2 above. We need to do a full conversion which requires an
       // actual CPU device.
-      cpu_interface_->convert_av_frame_to_frame_output(
-          av_frame, cpu_frame_output);
+      cpu_interface_->convert_av_frame_to_frame_output(av_frame, cpu_frame_output);
     }
 
     // Finally, we need to send the frame back to the GPU. Note that the
@@ -395,6 +393,16 @@ std::string CudaDeviceInterface::get_details() {
 // Below are methods exclusive to video encoding:
 // --------------------------------------------------------------------------
 
+AVPixelFormat CudaDeviceInterface::get_encoding_pixel_format(
+    [[maybe_unused]] const AVCodec& av_codec,
+    const std::optional<std::string>& user_pixel_format) const {
+  STD_TORCH_CHECK(
+      !user_pixel_format.has_value(),
+      "Video encoding on GPU currently only supports the nv12 pixel format. "
+      "Do not set pixel_format to use nv12 by default.");
+  return CudaDeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
+}
+
 UniqueAVFrame CudaDeviceInterface::convert_tensor_to_av_frame_for_encoding(
     const torch::stable::Tensor& tensor,
     int frame_index,
@@ -471,13 +479,12 @@ void CudaDeviceInterface::setup_hardware_frame_context_for_encoding(
   STD_TORCH_CHECK(
       hardware_device_ctx_, "Hardware device context has not been initialized");
 
-  AVBufferRef* hw_frames_ctx_ref =
-      av_hwframe_ctx_alloc(hardware_device_ctx_.get());
+  AVBufferRef* hw_frames_ctx_ref = av_hwframe_ctx_alloc(hardware_device_ctx_.get());
   STD_TORCH_CHECK(
       hw_frames_ctx_ref != nullptr,
       "Failed to allocate hardware frames context for codec");
 
-  codec_context->sw_pix_fmt = DeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
+  codec_context->sw_pix_fmt = CudaDeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
   // Always set pixel format to support CUDA encoding.
   codec_context->pix_fmt = AV_PIX_FMT_CUDA;
 
