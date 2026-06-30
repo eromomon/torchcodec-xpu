@@ -46,7 +46,6 @@ StableDeviceType parseDeviceType(const std::string& deviceType) {
   }
 }
 
-// Moved from Encoder.cpp so the base getEncodingPixelFormat can reuse it.
 AVPixelFormat validatePixelFormat(
     const AVCodec& avCodec,
     const std::string& targetPixelFormat) {

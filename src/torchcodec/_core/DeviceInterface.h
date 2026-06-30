@@ -169,10 +169,12 @@ class DeviceInterface {
   }
 
   // Returns the pixel format the encoder should use for this device.
-  // Default policy lives in DeviceInterface.cpp; HW devices may override.
   virtual AVPixelFormat getEncodingPixelFormat(
       const AVCodec& avCodec,
-      const std::optional<std::string>& userPixelFormat) const;
+      const std::optional<std::string>& userPixelFormat) const {
+    STD_TORCH_CHECK(
+        false, "getEncodingPixelFormat not implemented");
+}
 
   // No-op on CPU so the encoder can call it unconditionally; HW devices
   // override to attach an AVHWFramesContext.
@@ -206,7 +208,7 @@ createDeviceInterface(
     const StableDevice& device,
     const std::string_view variant = "default");
 
-// Preferred encoding variant per device type (decoding is unaffected).
+// Preferred encoding variant per device type.
 TORCHCODEC_THIRD_PARTY_API std::string_view getDefaultEncodingVariant(
     StableDeviceType deviceType);
 

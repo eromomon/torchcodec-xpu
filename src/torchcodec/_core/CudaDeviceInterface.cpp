@@ -392,7 +392,6 @@ std::string CudaDeviceInterface::getDetails() {
 // Below are methods exclusive to video encoding:
 // --------------------------------------------------------------------------
 
-// NVENC only consumes NV12; reject any user-supplied pixel format.
 AVPixelFormat CudaDeviceInterface::getEncodingPixelFormat(
     [[maybe_unused]] const AVCodec& avCodec,
     const std::optional<std::string>& userPixelFormat) const {
