@@ -49,6 +49,10 @@ class CpuDeviceInterface : public DeviceInterface {
       const torch::stable::Tensor& tensor,
       int frameIndex,
       AVCodecContext* codecContext) override;
+      
+  AVPixelFormat getEncodingPixelFormat(
+      const AVCodec& avCodec,
+      const std::optional<std::string>& userPixelFormat) const override;
 
   std::string getDetails() override;
 

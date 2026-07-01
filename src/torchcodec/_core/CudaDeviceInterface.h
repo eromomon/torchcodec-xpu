@@ -15,6 +15,10 @@ namespace facebook::torchcodec {
 
 class CudaDeviceInterface : public DeviceInterface {
  public:
+  
+  //  Pixel format used for encoding on CUDA devices.
+  static constexpr AVPixelFormat CUDA_ENCODING_PIXEL_FORMAT = AV_PIX_FMT_NV12;
+
   CudaDeviceInterface(const StableDevice& device);
 
   virtual ~CudaDeviceInterface();

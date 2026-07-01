@@ -7,7 +7,6 @@
 #include "DeviceInterface.h"
 #include <map>
 #include <mutex>
-#include <sstream>
 #include "StableABICompat.h"
 
 namespace facebook::torchcodec {
@@ -46,52 +45,7 @@ StableDeviceType parseDeviceType(const std::string& deviceType) {
   }
 }
 
-AVPixelFormat validatePixelFormat(
-    const AVCodec& avCodec,
-    const std::string& targetPixelFormat) {
-  AVPixelFormat pixelFormat = av_get_pix_fmt(targetPixelFormat.c_str());
-
-  // Validate that the encoder supports this pixel format
-  const AVPixelFormat* supportedFormats = getSupportedPixelFormats(avCodec);
-  if (supportedFormats != nullptr) {
-    for (int i = 0; supportedFormats[i] != AV_PIX_FMT_NONE; ++i) {
-      if (supportedFormats[i] == pixelFormat) {
-        return pixelFormat;
-      }
-    }
-  }
-
-  std::stringstream errorMsg;
-  // av_get_pix_fmt failed to find a pix_fmt
-  if (pixelFormat == AV_PIX_FMT_NONE) {
-    errorMsg << "Unknown pixel format: " << targetPixelFormat;
-  } else {
-    errorMsg << "Specified pixel format " << targetPixelFormat
-             << " is not supported by the " << avCodec.name << " encoder.";
-  }
-  // Build error message, similar to FFmpeg's error log
-  errorMsg << "\nSupported pixel formats for " << avCodec.name << ":";
-  if (supportedFormats != nullptr) {
-    for (int i = 0; supportedFormats[i] != AV_PIX_FMT_NONE; ++i) {
-      errorMsg << " " << av_get_pix_fmt_name(supportedFormats[i]);
-    }
-  }
-  STD_TORCH_CHECK(false, errorMsg.str());
-}
-
 } // namespace
-
-// Default CPU policy: validate user format or pick codec's first supported.
-AVPixelFormat DeviceInterface::getEncodingPixelFormat(
-    const AVCodec& avCodec,
-    const std::optional<std::string>& userPixelFormat) const {
-  if (userPixelFormat.has_value()) {
-    return validatePixelFormat(avCodec, userPixelFormat.value());
-  }
-  const AVPixelFormat* formats = getSupportedPixelFormats(avCodec);
-  return (formats && formats[0] != AV_PIX_FMT_NONE) ? formats[0]
-                                                    : AV_PIX_FMT_YUV420P;
-}
 
 // CUDA's encoder lives under variant "ffmpeg" because (kStableCUDA, "default")
 // is owned by BetaCudaDeviceInterface for decoding.
