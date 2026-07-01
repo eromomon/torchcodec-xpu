@@ -5,10 +5,39 @@
 // LICENSE file in the root directory of this source tree.
 
 #include "CpuDeviceInterface.h"
+#include <sstream>
 
 namespace facebook::torchcodec {
 
 namespace {
+
+AVPixelFormat validatePixelFormat(
+    const AVCodec& avCodec,
+    const std::string& targetPixelFormat) {
+  AVPixelFormat pixelFormat = av_get_pix_fmt(targetPixelFormat.c_str());
+  const AVPixelFormat* supportedFormats = getSupportedPixelFormats(avCodec);
+  if (supportedFormats != nullptr) {
+    for (int i = 0; supportedFormats[i] != AV_PIX_FMT_NONE; ++i) {
+      if (supportedFormats[i] == pixelFormat) {
+        return pixelFormat;
+      }
+    }
+  }
+  std::stringstream errorMsg;
+  if (pixelFormat == AV_PIX_FMT_NONE) {
+    errorMsg << "Unknown pixel format: " << targetPixelFormat;
+  } else {
+    errorMsg << "Specified pixel format " << targetPixelFormat
+             << " is not supported by the " << avCodec.name << " encoder.";
+  }
+  errorMsg << "\nSupported pixel formats for " << avCodec.name << ":";
+  if (supportedFormats != nullptr) {
+    for (int i = 0; supportedFormats[i] != AV_PIX_FMT_NONE; ++i) {
+      errorMsg << " " << av_get_pix_fmt_name(supportedFormats[i]);
+    }
+  }
+  STD_TORCH_CHECK(false, errorMsg.str());
+}
 
 AVPixelFormat getOutputPixelFormat(OutputDtype outputDtype) {
   return outputDtype == OutputDtype::FLOAT32 ? AV_PIX_FMT_RGB48
@@ -25,6 +54,18 @@ static bool g_cpu = registerDeviceInterface(
     [](const StableDevice& device) { return new CpuDeviceInterface(device); });
 
 } // namespace
+
+AVPixelFormat CpuDeviceInterface::getEncodingPixelFormat(
+    const AVCodec& avCodec,
+    const std::optional<std::string>& userPixelFormat) const {
+  if (userPixelFormat.has_value()) {
+    return validatePixelFormat(avCodec, userPixelFormat.value());
+  }
+  const AVPixelFormat* formats = getSupportedPixelFormats(avCodec);
+  // Pick the codec's first supported format (often yuv420p), else fall back.
+  return (formats && formats[0] != AV_PIX_FMT_NONE) ? formats[0]
+                                                    : AV_PIX_FMT_YUV420P;
+}
 
 CpuDeviceInterface::CpuDeviceInterface(const StableDevice& device)
     : DeviceInterface(device) {

@@ -392,6 +392,16 @@ std::string CudaDeviceInterface::getDetails() {
 // Below are methods exclusive to video encoding:
 // --------------------------------------------------------------------------
 
+AVPixelFormat CudaDeviceInterface::getEncodingPixelFormat(
+    [[maybe_unused]] const AVCodec& avCodec,
+    const std::optional<std::string>& userPixelFormat) const {
+  STD_TORCH_CHECK(
+      !userPixelFormat.has_value(),
+      "Video encoding on GPU currently only supports the nv12 pixel format. "
+      "Do not set pixel_format to use nv12 by default.");
+  return CudaDeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
+}
+
 UniqueAVFrame CudaDeviceInterface::convertTensorToAVFrameForEncoding(
     const torch::stable::Tensor& tensor,
     int frameIndex,
@@ -473,7 +483,7 @@ void CudaDeviceInterface::setupHardwareFrameContextForEncoding(
       hwFramesCtxRef != nullptr,
       "Failed to allocate hardware frames context for codec");
 
-  codecContext->sw_pix_fmt = DeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
+  codecContext->sw_pix_fmt = CudaDeviceInterface::CUDA_ENCODING_PIXEL_FORMAT;
   // Always set pixel format to support CUDA encoding.
   codecContext->pix_fmt = AV_PIX_FMT_CUDA;
 
