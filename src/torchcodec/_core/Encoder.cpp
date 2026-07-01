@@ -348,7 +348,7 @@ int MultiStreamEncoder::addVideoStream(
   VideoStream videoStream;
   StableDevice stableDevice(std::move(device));
   videoStream.deviceInterface = createDeviceInterface(
-      stableDevice, getDefaultEncodingVariant(stableDevice.type()));
+      stableDevice, stableDevice.type() == kStableCUDA ? "ffmpeg" : "default");
   videoStream.inHeight = height;
   videoStream.inWidth = width;
   videoStream.inFrameRate = frameRate;

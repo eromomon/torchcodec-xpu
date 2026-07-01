@@ -204,10 +204,6 @@ createDeviceInterface(
     const StableDevice& device,
     const std::string_view variant = "default");
 
-// Preferred encoding variant per device type.
-TORCHCODEC_THIRD_PARTY_API std::string_view getDefaultEncodingVariant(
-    StableDeviceType deviceType);
-
 torch::stable::Tensor rgbAVFrameToTensor(const UniqueAVFrame& avFrame);
 
 } // namespace facebook::torchcodec

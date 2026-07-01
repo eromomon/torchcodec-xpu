@@ -47,19 +47,6 @@ StableDeviceType parseDeviceType(const std::string& deviceType) {
 
 } // namespace
 
-// CUDA's encoder lives under variant "ffmpeg" because (kStableCUDA, "default")
-// is owned by BetaCudaDeviceInterface for decoding.
-std::string_view getDefaultEncodingVariant(StableDeviceType deviceType) {
-  switch (deviceType) {
-    case kStableCUDA:
-      return "ffmpeg";
-    case kStableCPU:
-    case kStableXPU:
-    default:
-      return "default";
-  }
-}
-
 bool registerDeviceInterface(
     const DeviceInterfaceKey& key,
     CreateDeviceInterfaceFn createInterface) {
