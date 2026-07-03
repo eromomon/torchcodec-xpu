@@ -241,7 +241,8 @@ void CudaDeviceInterface::convert_av_frame_to_frame_output(
     FrameOutput& frame_output,
     std::optional<torch::stable::Tensor> pre_allocated_output_tensor) {
   validate_pre_allocated_tensor_shape(
-      pre_allocated_output_tensor, FrameDims(av_frame->height, av_frame->width));
+      pre_allocated_output_tensor,
+      FrameDims(av_frame->height, av_frame->width));
 
   has_decoded_frame_ = true;
 
@@ -275,7 +276,8 @@ void CudaDeviceInterface::convert_av_frame_to_frame_output(
     } else {
       // Reason 2 above. We need to do a full conversion which requires an
       // actual CPU device.
-      cpu_interface_->convert_av_frame_to_frame_output(av_frame, cpu_frame_output);
+      cpu_interface_->convert_av_frame_to_frame_output(
+          av_frame, cpu_frame_output);
     }
 
     // Finally, we need to send the frame back to the GPU. Note that the
@@ -479,7 +481,8 @@ void CudaDeviceInterface::setup_hardware_frame_context_for_encoding(
   STD_TORCH_CHECK(
       hardware_device_ctx_, "Hardware device context has not been initialized");
 
-  AVBufferRef* hw_frames_ctx_ref = av_hwframe_ctx_alloc(hardware_device_ctx_.get());
+  AVBufferRef* hw_frames_ctx_ref =
+      av_hwframe_ctx_alloc(hardware_device_ctx_.get());
   STD_TORCH_CHECK(
       hw_frames_ctx_ref != nullptr,
       "Failed to allocate hardware frames context for codec");

@@ -173,7 +173,8 @@ class DeviceInterface {
   // Returns the pixel format the encoder should use for this device.
   virtual AVPixelFormat get_encoding_pixel_format(
       [[maybe_unused]] const AVCodec& av_codec,
-      [[maybe_unused]] const std::optional<std::string>& user_pixel_format) const {
+      [[maybe_unused]] const std::optional<std::string>& user_pixel_format)
+      const {
     STD_TORCH_CHECK(false, "get_encoding_pixel_format not implemented");
   }
 

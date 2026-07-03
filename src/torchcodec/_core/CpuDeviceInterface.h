@@ -55,8 +55,6 @@ class CpuDeviceInterface : public DeviceInterface {
       const AVCodec& av_codec,
       const std::optional<std::string>& user_pixel_format) const override;
 
-
-
   std::string get_details() override;
 
  private:

@@ -15,7 +15,6 @@ namespace facebook::torchcodec {
 
 class CudaDeviceInterface : public DeviceInterface {
  public:
-  
   //  Pixel format used for encoding on CUDA devices.
   static constexpr AVPixelFormat CUDA_ENCODING_PIXEL_FORMAT = AV_PIX_FMT_NV12;
 
@@ -65,7 +64,8 @@ class CudaDeviceInterface : public DeviceInterface {
   // Our CUDA decoding code assumes NV12 format. In order to handle other
   // kinds of input, we need to convert them to NV12. Our current implementation
   // does this using filtergraph.
-  UniqueAVFrame maybe_convert_av_frame_to_nv12_or_rgb24(UniqueAVFrame& av_frame);
+  UniqueAVFrame maybe_convert_av_frame_to_nv12_or_rgb24(
+      UniqueAVFrame& av_frame);
 
   // We sometimes encounter frames that cannot be decoded on the CUDA device.
   // Rather than erroring out, we decode them on the CPU.
